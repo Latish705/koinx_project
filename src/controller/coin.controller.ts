@@ -5,64 +5,48 @@ import { Coin, ICoin } from "../models/coin";
 
 import schedule from "node-schedule";
 import { Price } from "../models/price";
+import { redis } from "..";
 
-const fetchPrice = async (
-  bitcoinId: string,
-  ethereumId: string,
-  maticId: string
-) => {
-  const bitcoinData = await fetch(
-    `https://api.coingecko.com/api/v3/simple/price?ids=${bitcoinId}&vs_currencies=usd&include_market_cap=true&include_24hr_change=true`
-  ).then((res) => res.json());
-
-  const ethereumData = await fetch(
-    `https://api.coingecko.com/api/v3/simple/price?ids=${ethereumId}&vs_currencies=usd&include_market_cap=true&include_24hr_change=true`
-  ).then((res) => res.json());
-
-  const maticData = await fetch(
-    `https://api.coingecko.com/api/v3/simple/price?ids=${maticId}&vs_currencies=usd&include_market_cap=true&include_24hr_change=true`
-  ).then((res) => res.json());
-
-  return [bitcoinData, ethereumData, maticData];
+const fetchPrices = async (coinIds: string[]) => {
+  try {
+    const responses = await Promise.all(
+      coinIds.map((id) =>
+        fetch(
+          `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd&include_market_cap=true&include_24hr_change=true`
+        ).then((res) => res.json())
+      )
+    );
+    return responses;
+  } catch (error: any) {
+    console.error("Error fetching prices:", error.message);
+    throw new Error("Failed to fetch coin prices");
+  }
 };
 
 export const getCoinPrice = async () => {
   try {
-    const bitcoinId = await Coin.findOne({ uniqueName: "bitcoin" });
-    const ethereumId = await Coin.findOne({ uniqueName: "ethereum" });
-    const maticId = await Coin.findOne({ uniqueName: "matic-network" });
+    const coins = await Coin.find({
+      uniqueName: { $in: ["bitcoin", "ethereum", "matic-network"] },
+    });
 
-    if (!bitcoinId || !ethereumId || !maticId) {
+    if (coins.length !== 3) {
       throw new Error("One or more coin IDs not found");
     }
 
-    const response = await fetchPrice(
-      bitcoinId.uniqueName,
-      ethereumId.uniqueName,
-      maticId.uniqueName
-    );
+    const coinIds = coins.map((coin) => coin.uniqueName);
+    const response = await fetchPrices(coinIds);
 
-    console.log("Fetched data:", response);
+    const priceData = coins.map((coin, index) => ({
+      coinId: coin._id,
+      price: response[index][coin.uniqueName].usd,
+      marketCap: response[index][coin.uniqueName].usd_market_cap,
+      change24hr: response[index][coin.uniqueName].usd_24h_change,
+      date: new Date(),
+    }));
 
-    await Price.insertMany([
-      {
-        coinId: bitcoinId._id,
-        price: response[0].bitcoin.usd,
-        date: new Date(),
-      },
-      {
-        coinId: ethereumId._id,
-        price: response[1].ethereum.usd,
-        date: new Date(),
-      },
-      {
-        coinId: maticId._id,
-        price: response[2]["matic-network"].usd,
-        date: new Date(),
-      },
-    ]);
+    await Price.insertMany(priceData);
   } catch (error: any) {
-    console.log("Error fetching coin prices:", error.message);
+    console.error("Error in getCoinPrice:", error.message);
   }
 };
 
@@ -111,12 +95,30 @@ export const createCoin = async (
 
 export const getStats = async (req: Request, res: Response): Promise<void> => {
   try {
-    const coinId = req.params.coinId;
+    const coin = req.query.coin?.toString();
+    if (!coin) {
+      res.status(400).send("Coin ID is required");
+      return;
+    }
 
-    const stats = await Price.find({ coinId });
+    const redisKey = `coin:${coin}:stats`;
+    const cachedStats = await redis.get(redisKey);
+    if (cachedStats) {
+      res.status(200).json({ success: true, data: cachedStats });
+      return;
+    }
+
+    const coinDB = await Coin.findOne({ uniqueName: coin });
+
+    const stats = await Price.find({ coin: coinDB?._id });
+    console.log(stats);
+
     stats.sort((a, b) => b.date.getTime() - a.date.getTime());
-    // need the latest fetched price
+
     const latestPrice = stats[0].price;
+
+    await redis.set(redisKey, stats);
+    await redis.expire(redisKey, 2 * 60 * 60);
 
     res.status(200).json({
       success: true,
@@ -133,37 +135,50 @@ export const getDeviation = async (
   res: Response
 ): Promise<void> => {
   try {
-    const coinId = req.query.coin as string; // Assuming `coin` is passed as a query parameter
-    if (!coinId) {
-      res.status(400).send("Coin ID is required");
+    const { coin } = req.query;
+    if (!coin) {
+      res.status(400).json({ success: false, message: "Coin is required" });
+      return;
     }
 
-    // Fetch the last 100 records sorted by date in descending order
-    const stats = await Price.find({ coinId }).sort({ date: -1 }).limit(100);
+    const redisKey = `coin:${coin}:deviation`;
+    const cachedDeviation = await redis.get(redisKey);
+    if (cachedDeviation) {
+      res
+        .status(200)
+        .json({ success: true, deviation: parseFloat(cachedDeviation) });
+      return;
+    }
+
+    const coinDoc = await Coin.findOne({ uniqueName: coin });
+    if (!coinDoc) {
+      res.status(404).json({ success: false, message: "Coin not found" });
+      return;
+    }
+
+    const stats = await Price.find({ coinId: coinDoc._id })
+      .sort({ date: -1 })
+      .limit(100);
 
     if (stats.length === 0) {
-      res.status(404).send("No price data found for the given coin");
+      res.status(404).json({ success: false, message: "No price data found" });
+      return;
     }
 
-    // Extract prices from the stats
     const prices = stats.map((stat) => stat.price);
-
-    // Calculate the mean (average)
     const mean = prices.reduce((sum, price) => sum + price, 0) / prices.length;
-
-    // Calculate the variance
     const variance =
       prices.reduce((sum, price) => sum + Math.pow(price - mean, 2), 0) /
       prices.length;
-
-    // Calculate the standard deviation
     const deviation = Math.sqrt(variance);
 
-    res.status(200).json({
-      deviation: parseFloat(deviation.toFixed(2)), // Limit to 2 decimal places
-    });
+    await redis.set(redisKey, deviation.toFixed(2));
+    await redis.expire(redisKey, 2 * 60 * 60);
+    res
+      .status(200)
+      .json({ success: true, deviation: parseFloat(deviation.toFixed(2)) });
   } catch (error: any) {
     console.error("Error in getDeviation:", error.message);
-    res.status(500).send("Server Error");
+    res.status(500).json({ success: false, message: "Server Error" });
   }
 };
