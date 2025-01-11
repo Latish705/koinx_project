@@ -1,12 +1,18 @@
 import mongoose, { Schema, model } from "mongoose";
 
 export interface ICoin {
-  name: string;
+  uniqueName: string; // bitcoin
+  name: string; // Bitcoin
   symbol: string; // e.g., BTC, ETH
 }
 
 const CoinSchema = new Schema<ICoin>(
   {
+    uniqueName: {
+      type: String,
+      required: true,
+      unique: true,
+    },
     name: {
       type: String,
       required: true,

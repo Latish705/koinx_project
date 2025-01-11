@@ -1,8 +1,19 @@
 import { Router } from "express";
-import { getStats } from "../controller/coin.controller";
+import {
+  createCoin,
+  getCoinPrice,
+  getDeviation,
+  getStats,
+} from "../controller/coin.controller";
 
-const router = Router();
+const appRouter = Router();
 
-router.get("/stats", getStats);
+appRouter.get("/getcoin", getCoinPrice);
 
-router.get("/deviatioin");
+appRouter.post("/create", createCoin);
+
+appRouter.get("/stats", getStats);
+
+appRouter.get("/deviation", getDeviation);
+
+export default appRouter;
