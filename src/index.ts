@@ -8,14 +8,17 @@ const PORT = process.env.PORT || 8000;
 
 export let redis: any;
 
-connectDB()
-  .then(() => {
-    redis = connectRedis();
+const startServer = async () => {
+  try {
+    redis = await connectRedis();
+    await connectDB();
     app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });
-  })
-  .catch((error) => {
-    console.log(error.message);
+  } catch (error: any) {
+    console.error("Error starting server:", error.message);
     process.exit(1);
-  });
+  }
+};
+
+startServer();

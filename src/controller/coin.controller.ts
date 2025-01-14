@@ -109,15 +109,17 @@ export const getStats = async (req: Request, res: Response): Promise<void> => {
     }
 
     const coinDB = await Coin.findOne({ uniqueName: coin });
-
-    const stats = await Price.find({ coin: coinDB?._id });
-    console.log(stats);
+    if (!coinDB) {
+      res.status(404).json({ success: false, message: "Coin not found" });
+      return;
+    }
+    const stats = await Price.find({ coinId: coinDB?._id });
 
     stats.sort((a, b) => b.date.getTime() - a.date.getTime());
 
     const latestPrice = stats[0].price;
 
-    await redis.set(redisKey, stats);
+    await redis.set(redisKey, latestPrice);
     await redis.expire(redisKey, 2 * 60 * 60);
 
     res.status(200).json({
