@@ -35,14 +35,28 @@ export const getCoinPrice = async () => {
 
     const coinIds = coins.map((coin) => coin.uniqueName);
     const response = await fetchPrices(coinIds);
+    console.log("Coin IDs:", coinIds);
+    console.log("Fetched Prices Response:", response);
 
-    const priceData = coins.map((coin, index) => ({
-      coinId: coin._id,
-      price: response[index][coin.uniqueName].usd,
-      marketCap: response[index][coin.uniqueName].usd_market_cap,
-      change24hr: response[index][coin.uniqueName].usd_24h_change,
-      date: new Date(),
-    }));
+    const priceData = coins
+      .map((coin, index) => {
+        const uniqueName = coin.uniqueName; // For clarity
+        const coinData = response[index][uniqueName];
+        if (!coinData) {
+          console.error(`Missing data for coin: ${uniqueName}`);
+          return null;
+        }
+
+        return {
+          coinId: coin._id,
+          price: coinData.usd,
+          marketCap: coinData.usd_market_cap,
+          change24hr: coinData.usd_24h_change,
+          date: new Date(),
+        };
+      })
+      .filter(Boolean);
+    console.log(priceData);
 
     await Price.insertMany(priceData);
   } catch (error: any) {
